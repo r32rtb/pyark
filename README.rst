@@ -19,6 +19,8 @@ Features
 Currently the following functionalities are supported:
 
 * Get accounts
+  * Get Credentials
+  * Change Password on CPM
 * Create accounts
 * Delete accounts
 
@@ -51,6 +53,14 @@ Get a list of available accounts:
            account get                      \
            --safe MySafe                    \
            --keywords bruce
+           
+    Optional:
+    Get credentials of user returned only if policy allows without reason
+           --getcreds
+           -gc
+    Change credentials for user by CPM
+           --changecreds
+           -cc
 
 Create a new account:
  
@@ -78,6 +88,16 @@ Delete an existing account:
            --safe MySafe                    \
            --accountname brucewayne         \
            --keywords bruce
+
+Optional parameters:
+
+Logon with Radius credentials
+  --radius
+  -r
+  
+Ignore certificate chain warning:
+  --ssl_ignore                            
+  -i
 
 Contributions
 =============

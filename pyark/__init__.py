@@ -11,7 +11,6 @@ import requests
 
 logger = logging.getLogger('pyark')
 
-
 class VaultConnector:
     """Handles the authentication against the API and calls the appropriate API
     endpoints.
@@ -43,6 +42,10 @@ class VaultConnector:
 
         if self.session_token is not None:
             headers = {"Authorization": self.session_token}
+        
+        if "ChangeCredentials" in api_endpoint:
+            headers = {"Authorization": self.session_token,
+                       "ImmediateChangeByCPM":"Yes"}
 
         logger.debug('Call params: %s, %s' % (api_endpoint, params))
         try:
@@ -59,6 +62,14 @@ class VaultConnector:
                 )
             elif http_method == "POST":
                 ret = requests.post(
+                    url     = url,
+                    json    = params,
+                    timeout = 10,
+                    verify  = False,
+                    headers = headers
+                )
+            elif http_method == "PUT":
+                ret = requests.put(
                     url     = url,
                     json    = params,
                     timeout = 10,
@@ -89,7 +100,7 @@ class VaultConnector:
 
         return ret
 
-    def login(self, user, password):
+    def login(self, user, password, radius):
         """Login into CyberArk and get the session token.
 
         :param     user: Username used for the authentication
@@ -99,7 +110,8 @@ class VaultConnector:
         logger.debug('Login called, will try to login as %s' % (user))
         params = {
             "username": user,
-            "password": password
+            "password": password,
+            "useRadiusAuthentication": radius
         }
 
         ret = self.call(
@@ -174,6 +186,47 @@ def get_account(vault, params):
 
     return False
 
+def get_creds(vault, accountid):
+    """Get account credentials based on accountid.
+
+    :param:  vault: Authenticated Vault session
+    :accountid: AccountID returned from the get request """
+    ret = vault.call("GET", "PIMServices.svc/Accounts/"+accountid+"/Credentials")
+
+    if ret is None:
+        logger.error('Get account failed, API call returned %s' % (ret))
+
+    if ret.status_code == requests.codes.ok:
+        logger.info('Credentials returned successful: %s' % (ret.text))
+        return ret.text
+    else:
+        logger.info('Get account failed (HTTP %s)' % (ret.status_code))
+        logger.info('Get account failed reason: %s' % (ret.text))
+        logger.error('API call returned %s' % (ret))
+    return False
+
+def change_creds(vault, accountid):
+    """Change account credentials based on accountid and the assigned CPM.
+
+    :param:  vault: Authenticated Vault session
+    :accountid: AccountID returned from the get request """
+    params = {
+                "ChangeCredsForGroup":"no"
+              }
+    params = json.dumps(params)
+    ret = vault.call("PUT", "PIMServices.svc/Accounts/"+accountid+"/ChangeCredentials", params)
+
+    if ret is None:
+        logger.error('Attempt to change credentials failed, API call returned %s' % (ret))
+
+    if ret.status_code == requests.codes.ok:
+        logger.info('Credential change request returned accepted for: %s' % (accountid))
+        return True
+    else:
+        logger.info('Credential change failed (HTTP %s)' % (ret.status_code))
+        logger.info('Credential change failed reason: %s' % (ret.text))
+        logger.error('API call returned %s' % (ret))
+    return False
 
 def create_account(vault, params):
     """Create a new account.
@@ -250,12 +303,34 @@ def account(vault, args):
             "Keywords": args.keywords,
             "Safe":     args.safe
         }
-        if get_account(vault, params):
-            logger.info('Successfully get account: %s' % (params))
+        accounts = get_account(vault, params)
+        if accounts:
+            data = json.loads(accounts)
+            logger.info('Number of accounts found: %s' % (data["Count"]))
+            if data["Count"] > 0:
+                
+                if args.getcreds:
+                    accountid = data["accounts"][0]["AccountID"]
+                    logger.info('AccountID: %s' % (accountid))
+                    if get_creds(vault, accountid):
+                        logger.info('Successfully getcreds for Account Name: %s' % (accountid))
+                    else:
+                        logger.error('Unable to getcreds for Account Name: %s' % (accountid))
+    
+                if args.changecreds:
+                    accountid = data["accounts"][0]["AccountID"]
+                    logger.info('AccountID: %s' % (accountid))
+                    if change_creds(vault, accountid):
+                        logger.info('Successfully submitted a change in credentials for Account Name: %s' % (accountid))
+                    else:
+                        logger.error('Unable to submit a change in credentials for Account Name: %s' % (accountid))
+            
             return True
+       
         else:
             logger.error('Unable to get account: %s' % (params))
             return False
+        
     elif args.task == "delete":
         params = {
             "Keywords": args.keywords,
@@ -297,6 +372,18 @@ def main(argv=None):
         '--debug',
         '-d',
         help='Enable debug mode',
+        action='store_true'
+    )
+    parser.add_argument(
+        '--radius',
+        '-r',
+        help='Enable radius login',
+        action='store_true'
+    )
+    parser.add_argument(
+        '--ssl_ignore',
+        '-i',
+        help='Ignore SSL warning due to local CA signing certs',
         action='store_true'
     )
     parser.add_argument(
@@ -349,6 +436,20 @@ def main(argv=None):
         help='Safe to search for',
         type=str,
         required=True
+    )
+    account_get_subparser.add_argument(
+        '--getcreds',
+        '-gc',
+        help='Get account credentials',
+        action='store_true',
+        required=False
+    )
+    account_get_subparser.add_argument(
+        '--changecreds',
+        '-cc',
+        help='Change account credentials',
+        action='store_true',
+        required=False
     )
 
     # account create parser
@@ -446,8 +547,17 @@ def main(argv=None):
     ch.setFormatter(log_formatter)
     logger.addHandler(ch)
 
+    if args.ssl_ignore:
+        from requests.packages.urllib3.exceptions import InsecureRequestWarning
+        requests.packages.urllib3.disable_warnings(InsecureRequestWarning)
+
+    if args.radius:
+        radius = "true"
+    else:
+        radius = "false"
+
     vault = VaultConnector(args.base)
-    if (vault.login(args.apiuser, args.apipassword)):
+    if (vault.login(args.apiuser, args.apipassword, radius)):
         # run function for selected subparser
         if not args.func(vault, args):
             logger.error('Unable to complete CyberArk request')
